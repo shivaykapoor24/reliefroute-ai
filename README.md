@@ -93,13 +93,6 @@ Each experiment should be run at least five times and the final best costs recor
 - Village urgency estimated with Bayesian reasoning
 - Comparison against exact solvers on small maps
 
-## References
-
-1. S. Russell and P. Norvig, Artificial Intelligence: A Modern Approach, 4th ed., Pearson, 2020.
-2. S. Kirkpatrick, C. D. Gelatt and M. P. Vecchi, "Optimization by Simulated Annealing," Science, vol. 220, 1983.
-3. J. H. Holland, Adaptation in Natural and Artificial Systems, University of Michigan Press, 1975.
-4. G. A. Croes, "A Method for Solving Traveling-Salesman Problems," Operations Research, vol. 6, 1958.
-5. L. Davis, "Applying Adaptive Algorithms to Epistatic Domains," IJCAI, 1985.
 
 ## Author
 
