@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ReliefRoute AI – Hazard-Aware Drone Delivery Planner</title>
+<style>
+:root{--bg:#f7f6f2;--card:#fff;--fg:#1f2328;--mut:#5f6670;--line:#d9d6cc;--hz:rgba(226,75,74,.22);--hzl:#e24b4a;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#15171a;--card:#1f2226;--fg:#eceae4;--mut:#9aa0a8;--line:#363a40;--hz:rgba(240,110,100,.28);--hzl:#f0716a;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#15171a;--card:#1f2226;--fg:#eceae4;--mut:#9aa0a8;--line:#363a40;--hz:rgba(240,110,100,.28);--hzl:#f0716a;color-scheme:dark}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;line-height:1.45;padding:16px;max-width:1100px;margin-inline:auto}
+h1{font-size:1.45rem;margin:.2rem 0}
+p.sub{color:var(--mut);margin:.2rem 0 1rem;font-size:.95rem}
+.bar{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:14px}
+.bar label{font-size:.85rem;color:var(--mut);display:flex;align-items:center;gap:6px}
+button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--fg);padding:7px 14px;border-radius:8px;cursor:pointer}
+button.p{background:#1d6fd8;border-color:#1d6fd8;color:#fff}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.pan{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px}
+.pan h3{margin:0 0 6px;font-size:1rem;display:flex;justify-content:space-between;gap:8px}
+.pan canvas{width:100%;aspect-ratio:1;display:block;border-radius:8px;background:var(--bg)}
+.st{font-size:.85rem;color:var(--mut);margin-top:6px}
+.st b{color:var(--fg)}
+.wide{margin-top:12px}
+.tbl{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:.9rem}
+th,td{border-bottom:1px solid var(--line);padding:7px 8px;text-align:left;white-space:nowrap}
+.note{font-size:.82rem;color:var(--mut);margin-top:10px}
+</style>
+</head>
+<body>
+<h1>ReliefRoute AI</h1>
+<p class="sub">A drone must deliver relief packages to every village and return to base, avoiding storm and no-fly zones (red). Three AI search methods compete on the same map.</p>
+<div class="bar">
+<button class="p" id="run">▶ Run</button><button id="rst">↺ Restart solvers</button><button id="map">🗺 New map</button>
+<label>Villages <input type="range" id="n" min="10" max="40" value="25"><span id="nv">25</span></label>
+<label>Hazard zones <input type="range" id="h" min="0" max="7" value="4"><span id="hv">4</span></label>
+<label>Speed <input type="range" id="sp" min="1" max="20" value="6"></label>
+</div>
+<div class="grid">
+<div class="pan"><h3><span>Hill climbing</span><span id="p0" style="font-weight:400;font-size:.8rem"></span></h3><canvas id="c0" width="560" height="560"></canvas><div class="st" id="s0"></div></div>
+<div class="pan"><h3><span>Simulated annealing</span><span id="p1" style="font-weight:400;font-size:.8rem"></span></h3><canvas id="c1" width="560" height="560"></canvas><div class="st" id="s1"></div></div>
+<div class="pan"><h3><span>Genetic algorithm</span><span id="p2" style="font-weight:400;font-size:.8rem"></span></h3><canvas id="c2" width="560" height="560"></canvas><div class="st" id="s2"></div></div>
+</div>
+<div class="pan wide"><h3>Convergence: best route cost vs. cost evaluations</h3><canvas id="ch" width="1000" height="300" style="aspect-ratio:auto;height:240px"></canvas></div>
+<div class="pan wide tbl"><table id="tb"></table>
+<div class="note">Route cost = flight distance + 4× penalty for every kilometre flown inside a hazard zone. Baseline is a greedy nearest-neighbour route. Lower is better. Every method gets the same evaluation budget (60,000).</div></div>
+<script>
+const $=id=>document.getElementById(id), COL=['#d85a30','#378add','#1d9e75'], NAMES=['Hill climbing','Simulated annealing','Genetic algorithm'];
+const MAX=60000, POP=60, PEN=4;
+let N,pts,haz,C,run=false,ev=0,S=[],hist=[],base=0;
+const rnd=(a,b)=>a+Math.random()*(b-a), ri=n=>Math.random()*n|0;
+function css(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim()}
+function genMap(){
+ N=+$('n').value;const H=+$('h').value;
+ pts=[{x:.5,y:.5}];for(let i=1;i<N;i++)pts.push({x:rnd(.05,.95),y:rnd(.05,.95)});
+ haz=[];for(let i=0;i<H;i++)haz.push({x:rnd(.15,.85),y:rnd(.15,.85),r:rnd(.08,.15)});
+ C=pts.map((a,i)=>pts.map((b,j)=>{if(i==j)return 0;const d=Math.hypot(a.x-b.x,a.y-b.y);let k=0;
+  for(let s=0;s<16;s++){const t=(s+.5)/16,x=a.x+(b.x-a.x)*t,y=a.y+(b.y-a.y)*t;if(haz.some(z=>Math.hypot(x-z.x,y-z.y)<z.r))k++}
+  return d*(1+PEN*k/16)}));
+ // nearest-neighbour baseline
+ const left=new Set([...Array(N).keys()].slice(1));let t=[0];while(left.size){let b=-1,bd=1e9;left.forEach(j=>{if(C[t[t.length-1]][j]<bd){bd=C[t[t.length-1]][j];b=j}});t.push(b);left.delete(b)}
+ base=cost(t);reset();
+}
+function cost(t){let c=0;for(let i=0;i<N;i++)c+=C[t[i]][t[(i+1)%N]];return c}
+function rndTour(){const a=[...Array(N).keys()].slice(1);for(let i=a.length-1;i>0;i--){const j=ri(i+1);[a[i],a[j]]=[a[j],a[i]]}return [0,...a]}
+function twoOpt(t){const n=t.slice();let i=1+ri(N-1),j=1+ri(N-1);if(i>j)[i,j]=[j,i];while(i<j){[n[i],n[j]]=[n[j],n[i]];i++;j--}return n}
+function ox(p1,p2){const a0=1+ri(N-1),b0=1+ri(N-1),a=Math.min(a0,b0),b=Math.max(a0,b0),ch=new Array(N).fill(-1),used=new Set([0]);ch[0]=0;
+ for(let i=a;i<=b;i++){ch[i]=p1[i];used.add(p1[i])}
+ let pos=1+(b%(N-1));
+ for(let k=0;k<N-1;k++){const g=p2[1+((b+k)%(N-1))];if(!used.has(g)){while(ch[pos]!==-1)pos=pos%(N-1)+1;ch[pos]=g;used.add(g)}}
+ return ch}
+function reset(){
+ ev=0;hist=[[0,0,0]];
+ const t0=rndTour(),c0=cost(t0);
+ const T0=c0/N*0.6;
+ S=[{t:t0,c:c0,best:c0,bt:t0,stuck:0},{t:t0,c:c0,best:c0,bt:t0,T0,T:T0},{pop:Array.from({length:POP},()=>{const t=rndTour();return{t,c:cost(t)}}),best:1e9,bt:null,gen:0}];
+ const g=S[2];g.pop.sort((a,b)=>a.c-b.c);g.best=g.pop[0].c;g.bt=g.pop[0].t;
+ hist=[[0,c0,c0,g.best]];draw();
+}
+function step(budget){
+ const h=S[0],a=S[1],g=S[2];
+ for(let k=0;k<budget;k++){
+  const n=twoOpt(h.t),c=cost(n);if(c<h.c){h.t=n;h.c=c;h.stuck=0}else h.stuck++;h.best=h.c;h.bt=h.t;
+  a.T=a.T0*Math.pow(1e-3,(ev+k)/MAX);const m=twoOpt(a.t),d=cost(m)-a.c;
+  if(d<0||Math.random()<Math.exp(-d/a.T)){a.t=m;a.c+=d;if(a.c<a.best){a.best=a.c;a.bt=a.t}}
+ }
+ const gens=Math.max(1,Math.round(budget/POP));
+ for(let q=0;q<gens;q++){
+  const P=g.pop,nx=[P[0],P[1]],pick=()=>{let b=P[ri(POP)];for(let i=0;i<2;i++){const o=P[ri(POP)];if(o.c<b.c)b=o}return b};
+  while(nx.length<POP){let t=ox(pick().t,pick().t);if(Math.random()<.3)t=twoOpt(t);else if(Math.random()<.3){const i=1+ri(N-1),j=1+ri(N-1);[t[i],t[j]]=[t[j],t[i]]}nx.push({t,c:cost(t)})}
+  nx.sort((x,y)=>x.c-y.c);g.pop=nx;g.gen++;if(nx[0].c<g.best){g.best=nx[0].c;g.bt=nx[0].t}
+ }
+ ev+=budget;hist.push([ev,h.best,a.best,g.best]);
+}
+function drawMap(i){
+ const cv=$('c'+i),x=cv.getContext('2d'),W=cv.width,fg=css('--fg'),mut=css('--mut');
+ x.clearRect(0,0,W,W);
+ haz.forEach(z=>{x.beginPath();x.arc(z.x*W,z.y*W,z.r*W,0,7);x.fillStyle=css('--hz');x.fill();x.strokeStyle=css('--hzl');x.lineWidth=1.5;x.setLineDash([6,4]);x.stroke();x.setLineDash([])});
+ const t=S[i].bt;x.strokeStyle=COL[i];x.lineWidth=3;x.lineJoin='round';x.beginPath();
+ t.forEach((p,k)=>{const q=pts[p];k?x.lineTo(q.x*W,q.y*W):x.moveTo(q.x*W,q.y*W)});x.closePath();x.stroke();
+ pts.forEach((p,k)=>{x.beginPath();if(k==0){x.fillStyle=fg;x.rect(p.x*W-9,p.y*W-9,18,18)}else{x.fillStyle=mut;x.arc(p.x*W,p.y*W,6,0,7)}x.fill()});
+ const b=S[i].best;$('p'+i).textContent=(100*(base-b)/base).toFixed(1)+'% vs baseline';
+ const ex=i==2?' · generation <b>'+S[2].gen+'</b>':i==1?' · temperature <b>'+S[1].T.toFixed(3)+'</b>':' · failed moves in a row <b>'+S[0].stuck+'</b>';
+ $('s'+i).innerHTML='Best cost <b>'+b.toFixed(3)+'</b>'+ex;
+}
+function drawChart(){
+ const cv=$('ch'),x=cv.getContext('2d'),W=cv.width,Hh=cv.height,L=50,B=24;x.clearRect(0,0,W,Hh);
+ let lo=1e9,hi=0;hist.forEach(r=>{for(let k=1;k<4;k++){lo=Math.min(lo,r[k]);hi=Math.max(hi,r[k])}});hi=Math.max(hi,base);lo=Math.min(lo,base)*.95;
+ const X=e=>L+(W-L-10)*e/MAX,Y=v=>10+(Hh-B-10)*(1-(v-lo)/(hi-lo||1));
+ x.strokeStyle=css('--line');x.fillStyle=css('--mut');x.font='20px system-ui';x.lineWidth=1;
+ for(let k=0;k<=4;k++){const v=lo+(hi-lo)*k/4,y=Y(v);x.beginPath();x.moveTo(L,y);x.lineTo(W-10,y);x.stroke();x.fillText(v.toFixed(1),4,y+6)}
+ x.setLineDash([8,6]);x.strokeStyle=css('--mut');x.beginPath();x.moveTo(L,Y(base));x.lineTo(W-10,Y(base));x.stroke();x.setLineDash([]);x.fillText('baseline',W-110,Y(base)-6);
+ for(let k=1;k<4;k++){x.strokeStyle=COL[k-1];x.lineWidth=3;x.beginPath();hist.forEach((r,i)=>i?x.lineTo(X(r[0]),Y(r[k])):x.moveTo(X(r[0]),Y(r[k])));x.stroke()}
+ x.fillStyle=css('--mut');x.fillText('evaluations: '+ev+' / '+MAX,L,Hh-4);
+}
+function table(){
+ const rows=S.map((s,i)=>[NAMES[i],s.best]).sort((a,b)=>a[1]-b[1]);
+ $('tb').innerHTML='<tr><th>Rank</th><th>Algorithm</th><th>Best cost</th><th>Improvement over baseline</th></tr>'+rows.map((r,i)=>'<tr><td>'+(i+1)+'</td><td>'+r[0]+'</td><td>'+r[1].toFixed(3)+'</td><td>'+(100*(base-r[1])/base).toFixed(1)+'%</td></tr>').join('')+'<tr><td>–</td><td>Nearest-neighbour baseline</td><td>'+base.toFixed(3)+'</td><td>0%</td></tr>';
+}
+function draw(){[0,1,2].forEach(drawMap);drawChart();table()}
+function loop(){if(run){if(ev<MAX)step(+$('sp').value*40);else{run=false;$('run').textContent='▶ Run'}draw()}requestAnimationFrame(loop)}
+$('run').onclick=()=>{if(ev>=MAX)reset();run=!run;$('run').textContent=run?'⏸ Pause':'▶ Run'};
+$('rst').onclick=()=>{run=false;$('run').textContent='▶ Run';reset()};
+$('map').onclick=()=>{run=false;$('run').textContent='▶ Run';genMap()};
+$('n').oninput=e=>{$('nv').textContent=e.target.value;$('map').click()};
+$('h').oninput=e=>{$('hv').textContent=e.target.value;$('map').click()};
+genMap();loop();
+</script>
+</body>
+</html>
